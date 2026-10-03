@@ -39,6 +39,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -72,15 +73,14 @@ data class Track(val id: Long, val title: String, val artist: String, val album:
 
 fun loadTracks(ctx: Context): List<Track> {
     val out = mutableListOf<Track>()
-    val A = MediaStore.Audio.Media
-    val proj = arrayOf(A._ID, A.TITLE, A.ARTIST, A.ALBUM, A.ALBUM_ID, A.DURATION)
-    ctx.contentResolver.query(A.EXTERNAL_CONTENT_URI, proj,
-        "${A.IS_MUSIC}!=0 AND ${A.DURATION}>30000", null, "${A.TITLE} ASC")?.use { c ->
+    val proj = arrayOf(MediaStore.Audio.Media._ID, MediaStore.Audio.Media.TITLE, MediaStore.Audio.Media.ARTIST, MediaStore.Audio.Media.ALBUM, MediaStore.Audio.Media.ALBUM_ID, MediaStore.Audio.Media.DURATION)
+    ctx.contentResolver.query(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, proj,
+        "${MediaStore.Audio.Media.IS_MUSIC}!=0 AND ${MediaStore.Audio.Media.DURATION}>30000", null, "${MediaStore.Audio.Media.TITLE} ASC")?.use { c ->
         while (c.moveToNext()) {
             val id = c.getLong(0)
             out += Track(id, c.getString(1) ?: "Unknown", c.getString(2) ?: "Unknown",
                 c.getString(3) ?: "Unknown", c.getLong(4),
-                ContentUris.withAppendedId(A.EXTERNAL_CONTENT_URI, id), c.getLong(5))
+                ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, id), c.getLong(5))
         }
     }
     return out
