@@ -17,7 +17,16 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 8.9
-      - run: gradle assembleRelease --no-daemon
+      - name: Build APK
+        run: |
+          set +e
+          gradle assembleRelease --no-daemon --console=plain > build.log 2>&1
+          code=$?
+          if [ $code -ne 0 ]; then
+            errs=$(grep -E "^e: |What went wrong|error:|Execution failed|Could not|Unresolved|AAPT" -A3 build.log | head -n 40 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+            echo "::error title=BUILD ERRORS::$errs"
+          fi
+          exit $code
       - run: cp app/build/outputs/apk/release/app-release.apk F.INC.apk
       - uses: actions/upload-artifact@v4
         with:
