@@ -16,6 +16,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -60,6 +61,7 @@ class Playlists(private val prefs: SharedPreferences) {
 
 @Composable
 fun PlaylistsScreen(c: Controller, tracks: List<Track>, pl: Playlists) {
+    val h = rememberHaptics()
     var openId by remember { mutableStateOf<Long?>(null) }
     var creating by remember { mutableStateOf(false) }
     var picking by remember { mutableStateOf(false) }
@@ -68,50 +70,48 @@ fun PlaylistsScreen(c: Controller, tracks: List<Track>, pl: Playlists) {
     val open = pl.list.firstOrNull { it.id == openId }
     BackHandler(open != null) { openId = null }
 
-    Column(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color(0xFFDDE0F2), Color(0xFFF1F4FB))))
-        .statusBarsPadding().padding(top = 16.dp)) {
+    Column(Modifier.fillMaxSize().statusBarsPadding().padding(top = 16.dp)) {
         if (open == null) {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 30.dp), Arrangement.SpaceBetween, Alignment.CenterVertically) {
-                Text("Playlists", fontSize = 26.sp, fontWeight = FontWeight.ExtraBold)
-                Icon(Icons.Rounded.Add, "New playlist", Modifier.size(28.dp).clickable { creating = true })
+            Row(Modifier.fillMaxWidth().padding(start = 30.dp, end = 24.dp), Arrangement.SpaceBetween, Alignment.CenterVertically) {
+                Text("Playlists", style = Display)
+                GlassIconButton(Icons.Rounded.Add, "New playlist") { creating = true }
             }
-            if (pl.list.isEmpty()) Text("No playlists yet. Tap + to create one.", Modifier.padding(30.dp), color = Color.Gray)
-            LazyColumn(contentPadding = PaddingValues(start = 24.dp, end = 24.dp, top = 16.dp, bottom = 220.dp)) {
+            if (pl.list.isEmpty()) Text("No playlists yet. Tap + to create one.", Modifier.padding(30.dp), color = Palette.grey)
+            LazyColumn(contentPadding = PaddingValues(start = 24.dp, end = 24.dp, top = 18.dp, bottom = 220.dp)) {
                 items(pl.list, key = { it.id }) { p ->
-                    Row(Modifier.fillMaxWidth().padding(vertical = 6.dp).shadow(4.dp, RoundedCornerShape(20.dp))
-                        .background(Color.White, RoundedCornerShape(20.dp)).clickable { openId = p.id }.padding(12.dp),
-                        verticalAlignment = Alignment.CenterVertically) {
-                        Cover(byUri[p.uris.firstOrNull()], Modifier.size(60.dp), RoundedCornerShape(14.dp))
+                    Row(Modifier.fillMaxWidth().padding(vertical = 7.dp).pressable(h) { openId = p.id }
+                        .glass(RoundedCornerShape(24.dp), 10.dp, 0.55f).padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Cover(byUri[p.uris.firstOrNull()], Modifier.size(60.dp), CircleShape)
                         Column(Modifier.weight(1f).padding(horizontal = 14.dp)) {
-                            Text(p.name, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text("${p.uris.size} songs", color = Color.Gray, fontSize = 13.sp)
+                            Text(p.name, fontWeight = FontWeight.ExtraBold, color = Palette.ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text("${p.uris.size} songs", color = Palette.grey, fontSize = 13.sp)
                         }
-                        Icon(Icons.Rounded.ChevronRight, null, tint = Color.Gray)
+                        Icon(Icons.Rounded.ChevronRight, null, tint = Palette.greyLight)
                     }
                 }
             }
         } else {
             val list = open.uris.mapNotNull { byUri[it] }
             Row(Modifier.fillMaxWidth().padding(horizontal = 24.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Rounded.ArrowBack, "Back", Modifier.size(28.dp).clickable { openId = null })
-                Text(open.name, Modifier.weight(1f).padding(horizontal = 14.dp), fontSize = 22.sp, fontWeight = FontWeight.ExtraBold,
+                GlassIconButton(Icons.Rounded.ArrowBack, "Back") { openId = null }
+                Text(open.name, Modifier.weight(1f).padding(horizontal = 14.dp), style = Display.copy(fontSize = 24.sp),
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Icon(Icons.Rounded.Delete, "Delete playlist", Modifier.size(26.dp).clickable { pl.delete(open.id); openId = null })
+                GlassIconButton(Icons.Rounded.Delete, "Delete playlist") { pl.delete(open.id); openId = null }
             }
-            Row(Modifier.padding(horizontal = 24.dp, vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button({ if (list.isNotEmpty()) c.play(list, 0) }) { Icon(Icons.Rounded.PlayArrow, null); Text("Play") }
-                OutlinedButton({ if (list.isNotEmpty()) c.play(list.shuffled(), 0) }) { Icon(Icons.Rounded.Shuffle, null); Text("Shuffle") }
-                TextButton({ picking = true }) { Text("Add songs") }
+            Row(Modifier.padding(horizontal = 24.dp, vertical = 14.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                PillButton("Play", strong = true) { if (list.isNotEmpty()) c.play(list, 0) }
+                PillButton("Shuffle") { if (list.isNotEmpty()) c.play(list.shuffled(), 0) }
+                PillButton("Add songs") { picking = true }
             }
             LazyColumn(contentPadding = PaddingValues(start = 24.dp, end = 24.dp, bottom = 220.dp)) {
                 itemsIndexed(list) { i, t ->
-                    Row(Modifier.fillMaxWidth().clickable { c.play(list, i) }.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Cover(t, Modifier.size(52.dp), RoundedCornerShape(12.dp))
+                    Row(Modifier.fillMaxWidth().clickable { h.click(); c.play(list, i) }.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Cover(t, Modifier.size(54.dp), CircleShape)
                         Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
-                            Text(t.title, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text(t.artist, color = Color.Gray, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(t.title, fontWeight = FontWeight.ExtraBold, color = Palette.ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(t.artist, color = Palette.grey, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
-                        Icon(Icons.Rounded.Close, "Remove", tint = Color.Gray, modifier = Modifier.clickable { pl.toggle(open.id, t.uri.toString()) })
+                        Icon(Icons.Rounded.Close, "Remove", tint = Palette.greyLight, modifier = Modifier.clickable { h.click(); pl.toggle(open.id, t.uri.toString()) })
                     }
                 }
             }
@@ -119,21 +119,23 @@ fun PlaylistsScreen(c: Controller, tracks: List<Track>, pl: Playlists) {
     }
 
     if (creating) AlertDialog(onDismissRequest = { creating = false },
+        containerColor = Color(0xFFF4F6FC), shape = RoundedCornerShape(28.dp),
         title = { Text("New playlist") },
         text = { OutlinedTextField(name, { name = it }, singleLine = true, placeholder = { Text("Playlist name") }) },
         confirmButton = { TextButton({
-            if (name.isNotBlank()) { openId = pl.create(name.trim()); name = ""; creating = false }
+            if (name.isNotBlank()) { h.confirm(); openId = pl.create(name.trim()); name = ""; creating = false }
         }) { Text("Create") } },
         dismissButton = { TextButton({ creating = false }) { Text("Cancel") } })
 
     if (picking && open != null) AlertDialog(onDismissRequest = { picking = false },
+        containerColor = Color(0xFFF4F6FC), shape = RoundedCornerShape(28.dp),
         title = { Text("Add songs") },
         text = {
             LazyColumn(Modifier.heightIn(max = 400.dp)) {
                 items(tracks, key = { it.uri.toString() }) { t ->
                     val k = t.uri.toString()
-                    Row(Modifier.fillMaxWidth().clickable { pl.toggle(open.id, k) }, verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(k in open.uris, { pl.toggle(open.id, k) })
+                    Row(Modifier.fillMaxWidth().clickable { h.click(); pl.toggle(open.id, k) }, verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(k in open.uris, { h.click(); pl.toggle(open.id, k) })
                         Text(t.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 }
@@ -144,25 +146,27 @@ fun PlaylistsScreen(c: Controller, tracks: List<Track>, pl: Playlists) {
 
 @Composable
 fun AddToPlaylistDialog(t: Track, pl: Playlists, onDismiss: () -> Unit) {
+    val h = rememberHaptics()
     var name by remember { mutableStateOf("") }
     val key = t.uri.toString()
     AlertDialog(onDismissRequest = onDismiss,
+        containerColor = Color(0xFFF4F6FC), shape = RoundedCornerShape(28.dp),
         confirmButton = { TextButton(onDismiss) { Text("Done") } },
         title = { Text("Add to playlist") },
         text = {
             Column {
-                Text(t.title, color = Color.Gray, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(t.title, color = Palette.grey, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 LazyColumn(Modifier.heightIn(max = 240.dp)) {
                     items(pl.list, key = { it.id }) { p ->
-                        Row(Modifier.fillMaxWidth().clickable { pl.toggle(p.id, key) }, verticalAlignment = Alignment.CenterVertically) {
-                            Checkbox(key in p.uris, { pl.toggle(p.id, key) })
+                        Row(Modifier.fillMaxWidth().clickable { h.click(); pl.toggle(p.id, key) }, verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(key in p.uris, { h.click(); pl.toggle(p.id, key) })
                             Text(p.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                     }
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     OutlinedTextField(name, { name = it }, Modifier.weight(1f), singleLine = true, placeholder = { Text("New playlist") })
-                    TextButton({ if (name.isNotBlank()) { pl.create(name.trim(), key); name = "" } }) { Text("Create") }
+                    TextButton({ if (name.isNotBlank()) { h.confirm(); pl.create(name.trim(), key); name = "" } }) { Text("Create") }
                 }
             }
         })
