@@ -25,7 +25,7 @@ import androidx.compose.ui.unit.sp
 import kotlin.math.abs
 
 @Composable
-fun ExploreScreen(c: Controller, tracks: List<Track>, onImport: () -> Unit, onRefresh: () -> Unit, onAdd: (Track) -> Unit) {
+fun ExploreScreen(c: Controller, tracks: List<Track>, onImport: () -> Unit, onRefresh: () -> Unit, onWidget: () -> Unit, onAdd: (Track) -> Unit) {
     val h = rememberHaptics()
     val st = rememberLazyListState()
     val focus by remember {
@@ -47,6 +47,7 @@ fun ExploreScreen(c: Controller, tracks: List<Track>, onImport: () -> Unit, onRe
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                     DropdownMenuItem(text = { Text("Import music") }, onClick = { menu = false; onImport() })
                     DropdownMenuItem(text = { Text("Refresh library") }, onClick = { menu = false; onRefresh() })
+                    DropdownMenuItem(text = { Text("Widget style") }, onClick = { menu = false; onWidget() })
                 }
             }
         }

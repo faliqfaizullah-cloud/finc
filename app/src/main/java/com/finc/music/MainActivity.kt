@@ -274,7 +274,7 @@ fun App(c: Controller) {
                 Crossfade(targetState = tab, label = "tab") { t ->
                     when (t) {
                         0 -> HomeScreen(c, tracks) { addTarget = it }
-                        1 -> ExploreScreen(c, tracks, onImport, onRefresh) { addTarget = it }
+                        1 -> ExploreScreen(c, tracks, onImport, onRefresh, { ctx.startActivity(Intent(ctx, WidgetConfigActivity::class.java)) }) { addTarget = it }
                         else -> PlaylistsScreen(c, tracks, playlists)
                     }
                 }
