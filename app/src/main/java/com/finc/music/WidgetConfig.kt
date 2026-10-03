@@ -124,15 +124,15 @@ fun WidgetConfigScreen(onApply: (WidgetStyle) -> Unit, onClose: () -> Unit) {
                             art?.let { Image(it.asImageBitmap(), null, Modifier.size(52.dp).clip(RoundedCornerShape(12.dp)), contentScale = ContentScale.Crop) }
                             Icon(Icons.Rounded.MusicNote, null, Modifier.size(24.dp), tint = textC)
                         }
-                        Spacer(Modifier.height(6.dp))
+                        Spacer(Modifier.height(12.dp))
                         Text(title, color = textC, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp, maxLines = 1)
-                        Text(artist, color = Color(l.sub), fontSize = 12.sp, maxLines = 1)
+                        Text(artist, color = Color(l.sub), fontSize = 12.sp, maxLines = 1, modifier = Modifier.padding(top = 4.dp))
                         Spacer(Modifier.weight(1f))
                         Row(Modifier.clip(CircleShape)
                             .background(if (l.lightText) Color.White.copy(alpha = 0.25f) else Color.Black.copy(alpha = 0.12f))
-                            .padding(start = 10.dp, end = 16.dp, top = 7.dp, bottom = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+                            .padding(start = 10.dp, end = 16.dp, top = 10.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Rounded.PlayArrow, null, Modifier.size(18.dp), tint = textC)
-                            Text("Play", color = textC, fontWeight = FontWeight.ExtraBold, fontSize = 14.sp)
+                            Text("Play", color = textC, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp, modifier = Modifier.padding(start = 4.dp))
                         }
                     }
                 }

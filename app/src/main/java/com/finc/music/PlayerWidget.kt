@@ -14,6 +14,8 @@ import android.graphics.RectF
 import android.graphics.Shader
 import android.net.Uri
 import android.os.Bundle
+import android.util.TypedValue
+import androidx.core.content.ContextCompat
 import android.widget.RemoteViews
 import java.util.concurrent.Executors
 
@@ -26,6 +28,7 @@ class PlayerWidget : AppWidgetProvider() {
         private var cachedUri: String? = null
         private var cachedSrc: Bitmap? = null
         private var cachedArt: Bitmap? = null
+        private var cachedArtPx = 0
 
         fun saveState(ctx: Context, t: Track?) {
             if (t == null) return
@@ -59,40 +62,72 @@ class PlayerWidget : AppWidgetProvider() {
             return out
         }
 
+        private fun iconBitmap(ctx: Context, res: Int, px: Int, color: Int): Bitmap {
+            val b = Bitmap.createBitmap(px, px, Bitmap.Config.ARGB_8888)
+            ContextCompat.getDrawable(ctx, res)?.mutate()?.let {
+                it.setTint(color)
+                it.setBounds(0, 0, px, px)
+                it.draw(Canvas(b))
+            }
+            b.density = ctx.resources.displayMetrics.densityDpi
+            return b
+        }
+
         private fun build(ctx: Context, mgr: AppWidgetManager, id: Int, playing: Boolean, hasMedia: Boolean): RemoteViews {
             val prefs = ctx.getSharedPreferences("finc_widget", Context.MODE_PRIVATE)
             val uri = prefs.getString("uri", null)
+            val d = ctx.resources.displayMetrics.density
+            val o: Bundle = mgr.getAppWidgetOptions(id)
+            val wdp = o.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, 0).takeIf { it > 0 } ?: 200
+            val hdp = o.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, 0).takeIf { it > 0 } ?: 200
+            // The design is a 200dp square; everything scales from that so any size keeps the same proportions.
+            val k = (minOf(wdp, hdp) / 200f).coerceIn(0.55f, 1.8f)
+            fun px(dp: Float) = (dp * k * d).toInt().coerceAtLeast(1)
+
             val v = RemoteViews(ctx.packageName, R.layout.widget_finc)
             v.setTextViewText(R.id.widget_title, prefs.getString("title", null) ?: "F.INC")
             v.setTextViewText(R.id.widget_subtitle, prefs.getString("artist", null) ?: "Tap to choose music")
 
-            if (uri != null && (uri != cachedUri || cachedArt == null)) {
-                val src = runCatching { loadArtBitmap(ctx, Uri.parse(uri)) }.getOrNull() ?: placeholderBitmap()
-                cachedSrc = src
-                cachedArt = runCatching { roundedSquare(src, 256, 44f) }.getOrNull()
+            if (uri != cachedUri || cachedSrc == null) {
+                cachedSrc = uri?.let { runCatching { loadArtBitmap(ctx, Uri.parse(it)) }.getOrNull() } ?: placeholderBitmap()
                 cachedUri = uri
+                cachedArt = null
+            }
+            val artPx = px(52f)
+            if (cachedArt == null || cachedArtPx != artPx) {
+                cachedArt = runCatching { roundedSquare(cachedSrc!!, artPx, artPx * 0.23f) }.getOrNull()
+                cachedArt?.density = ctx.resources.displayMetrics.densityDpi
+                cachedArtPx = artPx
             }
             cachedArt?.let { v.setImageViewBitmap(R.id.widget_art, it) }
 
             // background + colours from the user's style, drawn at this widget's own size
             val style = WidgetStyle.load(ctx)
-            val d = ctx.resources.displayMetrics.density
-            val o: Bundle = mgr.getAppWidgetOptions(id)
-            val wdp = o.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, 0).takeIf { it > 0 } ?: 160
-            val hdp = o.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, 0).takeIf { it > 0 } ?: 160
             val scale = minOf(1f, 560f / (maxOf(wdp, hdp) * d))
             val look = WidgetRenderer.render(cachedSrc, style,
-                (wdp * d * scale).toInt().coerceAtLeast(64), (hdp * d * scale).toInt().coerceAtLeast(64), 26f * d * scale)
+                (wdp * d * scale).toInt().coerceAtLeast(64), (hdp * d * scale).toInt().coerceAtLeast(64), 31f * d * scale)
             v.setImageViewBitmap(R.id.widget_bg, look.bg)
+
+            // sizes
+            val pad = px(14f)
+            v.setViewPadding(R.id.widget_content, pad, pad, pad, pad)
+            v.setImageViewBitmap(R.id.widget_note, iconBitmap(ctx, R.drawable.ic_widget_note, px(24f), look.text))
+            v.setImageViewBitmap(R.id.widget_play_icon,
+                iconBitmap(ctx, if (playing) R.drawable.ic_widget_pause else R.drawable.ic_widget_play, px(18f), look.text))
+            v.setTextViewTextSize(R.id.widget_title, TypedValue.COMPLEX_UNIT_SP, 15f * k)
+            v.setTextViewTextSize(R.id.widget_subtitle, TypedValue.COMPLEX_UNIT_SP, 12f * k)
+            v.setTextViewTextSize(R.id.widget_play_label, TypedValue.COMPLEX_UNIT_SP, 15f * k)
+            v.setViewPadding(R.id.widget_title, 0, px(12f), 0, 0)
+            v.setViewPadding(R.id.widget_subtitle, 0, px(4f), 0, 0)
+            v.setViewPadding(R.id.widget_play, px(10f), px(10f), px(16f), px(10f))
+            v.setViewPadding(R.id.widget_play_label, px(4f), 0, 0, 0)
+
+            // colours
             v.setTextColor(R.id.widget_title, look.text)
             v.setTextColor(R.id.widget_subtitle, look.sub)
             v.setTextColor(R.id.widget_play_label, look.text)
-            v.setInt(R.id.widget_play_icon, "setColorFilter", look.text)
-            v.setInt(R.id.widget_note, "setColorFilter", look.text)
             v.setInt(R.id.widget_play, "setBackgroundResource",
                 if (look.lightText) R.drawable.widget_pill_bg else R.drawable.widget_pill_bg_dark)
-
-            v.setImageViewResource(R.id.widget_play_icon, if (playing) R.drawable.ic_widget_pause else R.drawable.ic_widget_play)
             v.setTextViewText(R.id.widget_play_label, if (playing) "Pause" else "Play")
 
             val flags = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
