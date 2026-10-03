@@ -6,6 +6,7 @@ import android.appwidget.AppWidgetProvider
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.BitmapShader
 import android.graphics.Canvas
@@ -78,8 +79,12 @@ class PlayerWidget : AppWidgetProvider() {
             val uri = prefs.getString("uri", null)
             val d = ctx.resources.displayMetrics.density
             val o: Bundle = mgr.getAppWidgetOptions(id)
-            val wdp = o.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, 0).takeIf { it > 0 } ?: 200
-            val hdp = o.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, 0).takeIf { it > 0 } ?: 200
+            // The widget's real size depends on orientation: portrait = min width x max height, landscape = max width x min height.
+            val land = ctx.resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+            val wdp = o.getInt(if (land) AppWidgetManager.OPTION_APPWIDGET_MAX_WIDTH else AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, 0)
+                .takeIf { it > 0 } ?: 200
+            val hdp = o.getInt(if (land) AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT else AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT, 0)
+                .takeIf { it > 0 } ?: 200
             // The design is a 200dp square; everything scales from that so any size keeps the same proportions.
             val k = (minOf(wdp, hdp) / 200f).coerceIn(0.55f, 1.8f)
             fun px(dp: Float) = (dp * k * d).toInt().coerceAtLeast(1)
@@ -104,8 +109,10 @@ class PlayerWidget : AppWidgetProvider() {
             // background + colours from the user's style, drawn at this widget's own size
             val style = WidgetStyle.load(ctx)
             val scale = minOf(1f, 560f / (maxOf(wdp, hdp) * d))
-            val look = WidgetRenderer.render(cachedSrc, style,
-                (wdp * d * scale).toInt().coerceAtLeast(64), (hdp * d * scale).toInt().coerceAtLeast(64), 31f * d * scale)
+            val bw = (wdp * d * scale).toInt().coerceAtLeast(64)
+            val bh = (hdp * d * scale).toInt().coerceAtLeast(64)
+            // same corner shape at every size: 11% of the shorter side
+            val look = WidgetRenderer.render(cachedSrc, style, bw, bh, 0.11f * minOf(bw, bh))
             v.setImageViewBitmap(R.id.widget_bg, look.bg)
 
             // sizes

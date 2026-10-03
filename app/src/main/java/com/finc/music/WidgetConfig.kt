@@ -100,7 +100,7 @@ fun WidgetConfigScreen(onApply: (WidgetStyle) -> Unit, onClose: () -> Unit) {
     }
     val look by produceState<WidgetRenderer.Look?>(null, style, art) {
         val a = art ?: return@produceState
-        value = withContext(Dispatchers.Default) { WidgetRenderer.render(a, style, 480, 480, 62f) }
+        value = withContext(Dispatchers.Default) { WidgetRenderer.render(a, style, 480, 480, 0.11f * 480f) }
     }
     val sliderColors = SliderDefaults.colors(thumbColor = Palette.ink, activeTrackColor = Palette.ink, inactiveTrackColor = Color(0x22000000))
 
