@@ -2,6 +2,7 @@
 
 package com.finc.music
 
+import android.graphics.Bitmap
 import android.os.Build
 import android.view.HapticFeedbackConstants
 import android.view.View
@@ -28,6 +29,7 @@ import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate as rotateDraw
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -173,5 +175,22 @@ fun MiniPill(c: Controller, onOpen: () -> Unit, modifier: Modifier = Modifier) {
         Box(Modifier.size(44.dp).pressable(h, true) { c.toggle() }, contentAlignment = Alignment.Center) {
             Icon(if (c.playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, null, Modifier.size(28.dp), tint = Palette.ink)
         }
+    }
+}
+
+/** The current song's own cover, shrunk and stretched so it reads as a soft colour wash behind the UI. */
+@Composable
+fun ArtBackdrop(t: Track?) {
+    val art = rememberArt(t)
+    val soft = remember(art) {
+        art?.let {
+            runCatching {
+                val sw = it.asAndroidBitmap().copy(Bitmap.Config.ARGB_8888, false)
+                Bitmap.createScaledBitmap(sw, 32, 32, true).asImageBitmap()
+            }.getOrNull()
+        }
+    }
+    if (soft != null) {
+        Image(soft, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop, alpha = 0.5f, filterQuality = FilterQuality.High)
     }
 }

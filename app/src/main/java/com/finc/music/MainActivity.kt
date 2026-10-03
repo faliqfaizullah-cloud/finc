@@ -112,12 +112,6 @@ fun readImported(ctx: Context, uri: Uri): Track? = runCatching {
 fun fmt(ms: Long) = "%d:%02d".format(ms / 60000, (ms / 1000) % 60)
 
 // ---------- Player ----------
-private fun artBytes(ctx: Context, t: Track): ByteArray? = runCatching {
-    loadArt(ctx, t)?.asAndroidBitmap()?.let { bmp ->
-        ByteArrayOutputStream().also { bmp.compress(Bitmap.CompressFormat.JPEG, 85, it) }.toByteArray()
-    }
-}.getOrNull()
-
 class Controller private constructor(private val app: Context) {
     companion object {
         @Volatile private var inst: Controller? = null
@@ -133,58 +127,31 @@ class Controller private constructor(private val app: Context) {
     var pos by mutableLongStateOf(0L)
     val current: Track? get() = queue.getOrNull(index)
 
-    private val io = Executors.newSingleThreadExecutor()
-    private val main = Handler(Looper.getMainLooper())
-    private val artDone = HashSet<Int>()
-    private var gen = 0
-
     init {
         exo.addListener(object : Player.Listener {
-            override fun onIsPlayingChanged(isPlaying: Boolean) { playing = isPlaying }
-            override fun onMediaItemTransition(m: MediaItem?, reason: Int) {
-                index = exo.currentMediaItemIndex
-                prefetchArt(index)
-            }
+            override fun onIsPlayingChanged(isPlaying: Boolean) { playing = isPlaying; PlayerWidget.refresh(app) }
+            override fun onMediaItemTransition(m: MediaItem?, reason: Int) { index = exo.currentMediaItemIndex; publish() }
         })
     }
 
-    private fun item(t: Track, art: ByteArray? = null) = MediaItem.Builder()
+    /** Every item carries an artwork URI, so the system always shows that song's own cover. */
+    private fun item(t: Track) = MediaItem.Builder()
         .setUri(t.uri).setMediaId(t.id.toString())
         .setMediaMetadata(MediaMetadata.Builder().setTitle(t.title).setArtist(t.artist).setAlbumTitle(t.album)
-            .apply { if (art != null) setArtworkData(art, MediaMetadata.PICTURE_TYPE_FRONT_COVER) }.build())
+            .setDisplayTitle(t.title).setArtworkUri(ArtProvider.uriFor(t.uri)).build())
         .build()
 
-    /** Loads cover art for upcoming/previous tracks so the lock screen shows the original album art. */
-    private fun prefetchArt(center: Int) {
-        val g = gen
-        for (k in (center - 1)..(center + 3)) {
-            val t = queue.getOrNull(k) ?: continue
-            if (k == exo.currentMediaItemIndex || k in artDone) continue
-            artDone.add(k)
-            io.execute {
-                val b = artBytes(app, t)
-                if (b != null) main.post {
-                    if (g == gen && queue.getOrNull(k) === t && k != exo.currentMediaItemIndex && k < exo.mediaItemCount)
-                        exo.replaceMediaItem(k, item(t, b))
-                }
-            }
-        }
+    private fun publish() {
+        PlayerWidget.saveState(app, current)
+        PlayerWidget.refresh(app)
     }
 
     fun play(list: List<Track>, i: Int) {
         queue = list; index = i
-        val g = ++gen
-        io.execute {
-            val b = artBytes(app, list[i])
-            main.post {
-                if (g != gen) return@post
-                artDone.clear(); artDone.add(i)
-                exo.setMediaItems(list.mapIndexed { k, t -> if (k == i) item(t, b) else item(t) }, i, 0)
-                exo.prepare(); exo.play()
-                app.startService(Intent(app, PlaybackService::class.java))
-                prefetchArt(i)
-            }
-        }
+        exo.setMediaItems(list.map { item(it) }, i, 0)
+        exo.prepare(); exo.play()
+        app.startService(Intent(app, PlaybackService::class.java))
+        publish()
     }
     fun toggle() { if (exo.isPlaying) exo.pause() else exo.play() }
     fun next() { if (exo.hasNextMediaItem()) exo.seekToNextMediaItem() }
@@ -205,28 +172,7 @@ class MainActivity : ComponentActivity() {
 private val artCache = LruCache<Long, ImageBitmap>(60)
 private val noArt = HashSet<Long>()
 
-private fun decodeArt(bytes: ByteArray): ImageBitmap? {
-    val o = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, o)
-    var sample = 1
-    while (o.outWidth / sample > 800) sample *= 2
-    val d = BitmapFactory.Options().apply { inSampleSize = sample }
-    return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, d)?.asImageBitmap()
-}
-
-private fun loadArt(ctx: Context, t: Track): ImageBitmap? {
-    runCatching {
-        val r = MediaMetadataRetriever()
-        try {
-            r.setDataSource(ctx, t.uri)
-            r.embeddedPicture?.let { return decodeArt(it) }
-        } finally { r.release() }
-    }
-    if (t.id > 0) return runCatching {
-        ctx.contentResolver.loadThumbnail(t.uri, Size(600, 600), null).asImageBitmap()
-    }.getOrNull()
-    return null
-}
+private fun loadArt(ctx: Context, t: Track): ImageBitmap? = loadArtBitmap(ctx, t.uri)?.asImageBitmap()
 
 @Composable
 fun rememberArt(t: Track?): ImageBitmap? {
@@ -307,6 +253,7 @@ fun App(c: Controller) {
 
     Box(Modifier.fillMaxSize()) {
         Aurora()
+        ArtBackdrop(c.current)
         when {
             !started -> Onboarding {
                 prefs.edit().putBoolean("onboarded", true).apply()
