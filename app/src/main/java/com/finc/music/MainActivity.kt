@@ -3,6 +3,8 @@
 package com.finc.music
 
 import android.Manifest
+import android.app.Activity
+import android.provider.Settings
 import android.content.ContentUris
 import android.content.Context
 import android.content.pm.PackageManager
@@ -50,6 +52,8 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
+import androidx.core.view.WindowCompat
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -70,18 +74,27 @@ import kotlin.math.abs
 
 // ---------- Data ----------
 data class Track(val id: Long, val title: String, val artist: String, val album: String,
-                 val albumId: Long, val uri: Uri, val duration: Long)
+                 val albumId: Long, val uri: Uri, val duration: Long, val genre: String = "")
+
+fun cleanGenre(raw: String?): String {
+    val g = raw?.substringBefore(';')?.trim().orEmpty()
+    return if (g.isEmpty() || g.startsWith("(") || g.all { it.isDigit() }) "" else g
+}
 
 fun loadTracks(ctx: Context): List<Track> {
     val out = mutableListOf<Track>()
-    val proj = arrayOf(MediaStore.Audio.Media._ID, MediaStore.Audio.Media.TITLE, MediaStore.Audio.Media.ARTIST, MediaStore.Audio.Media.ALBUM, MediaStore.Audio.Media.ALBUM_ID, MediaStore.Audio.Media.DURATION)
-    ctx.contentResolver.query(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, proj,
-        "${MediaStore.Audio.Media.IS_MUSIC}!=0 AND ${MediaStore.Audio.Media.DURATION}>30000", null, "${MediaStore.Audio.Media.TITLE} ASC")?.use { c ->
+    val A = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
+    val cols = mutableListOf(MediaStore.Audio.Media._ID, MediaStore.Audio.Media.TITLE, MediaStore.Audio.Media.ARTIST,
+        MediaStore.Audio.Media.ALBUM, MediaStore.Audio.Media.ALBUM_ID, MediaStore.Audio.Media.DURATION)
+    if (Build.VERSION.SDK_INT >= 30) cols += MediaStore.Audio.Media.GENRE
+    ctx.contentResolver.query(A, cols.toTypedArray(),
+        "${MediaStore.Audio.Media.IS_MUSIC}!=0 AND ${MediaStore.Audio.Media.DURATION}>30000", null,
+        "${MediaStore.Audio.Media.TITLE} ASC")?.use { c ->
         while (c.moveToNext()) {
             val id = c.getLong(0)
             out += Track(id, c.getString(1) ?: "Unknown", c.getString(2) ?: "Unknown",
-                c.getString(3) ?: "Unknown", c.getLong(4),
-                ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, id), c.getLong(5))
+                c.getString(3) ?: "Unknown", c.getLong(4), ContentUris.withAppendedId(A, id), c.getLong(5),
+                if (cols.size > 6) cleanGenre(c.getString(6)) else "")
         }
     }
     return out
@@ -105,7 +118,8 @@ fun readImported(ctx: Context, uri: Uri): Track? = runCatching {
         val album = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUM) ?: "Unknown"
         val dur = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
         Track(-(abs(uri.toString().hashCode()).toLong()) - 1, title, artist, album,
-            -abs(album.hashCode().toLong()) - 1_000_000_000_000L, uri, dur)
+            -abs(album.hashCode().toLong()) - 1_000_000_000_000L, uri, dur,
+            cleanGenre(r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_GENRE)))
     } finally { r.release() }
 }.getOrNull()
 
@@ -156,6 +170,8 @@ class Controller private constructor(private val app: Context) {
     fun toggle() { if (exo.isPlaying) exo.pause() else exo.play() }
     fun next() { if (exo.hasNextMediaItem()) exo.seekToNextMediaItem() }
     fun prev() { if (exo.currentPosition > 3000 || !exo.hasPreviousMediaItem()) exo.seekTo(0) else exo.seekToPreviousMediaItem() }
+    var speed by mutableFloatStateOf(1f)
+    fun setTempo(s: Float) { speed = s; exo.setPlaybackSpeed(s) }
     fun tick() { pos = exo.currentPosition }
 }
 
@@ -247,41 +263,66 @@ fun App(c: Controller) {
     val tracks = remember(media, imported) { media + imported }
     val playlists = remember { Playlists(prefs) }
     var addTarget by remember { mutableStateOf<Track?>(null) }
-    var started by remember { mutableStateOf(prefs.getBoolean("onboarded", false)) }
-    var tab by rememberSaveable { mutableIntStateOf(1) }
+
+    var screen by rememberSaveable { mutableIntStateOf(0) }          // 0 splash, 1 genre list, 2 device
+    var showAlbums by rememberSaveable { mutableStateOf(false) }
+    var catIndex by rememberSaveable { mutableIntStateOf(prefs.getInt("cat", 0)) }
+    var loadedCat by rememberSaveable { mutableIntStateOf(-1) }
     LaunchedEffect(c.playing) { while (c.playing) { c.tick(); delay(500) } }
 
-    Box(Modifier.fillMaxSize()) {
-        Aurora()
-        ArtBackdrop(c.current)
-        when {
-            !started -> Onboarding {
-                prefs.edit().putBoolean("onboarded", true).apply()
-                started = true
-                launcher.launch(permsToAsk())
-            }
-            tracks.isEmpty() -> Column(Modifier.fillMaxSize().statusBarsPadding().padding(32.dp),
-                Arrangement.Center, Alignment.CenterHorizontally) {
-                Text("No music yet", style = Display)
-                Spacer(Modifier.height(8.dp))
-                Text("Allow access to your library or import files.", color = Palette.grey)
-                Spacer(Modifier.height(24.dp))
-                PillButton("Allow access / Refresh", strong = true, onClick = onRefresh)
-                Spacer(Modifier.height(12.dp))
-                PillButton("Import music from files", onClick = onImport)
-            }
-            else -> {
-                Crossfade(targetState = tab, label = "tab") { t ->
-                    when (t) {
-                        0 -> HomeScreen(c, tracks) { addTarget = it }
-                        1 -> ExploreScreen(c, tracks, onImport, onRefresh, { ctx.startActivity(Intent(ctx, WidgetConfigActivity::class.java)) }) { addTarget = it }
-                        else -> PlaylistsScreen(c, tracks, playlists)
-                    }
-                }
-                if (tab != 0) MiniPill(c, { tab = 0 }, Modifier.align(Alignment.BottomCenter).padding(bottom = 92.dp))
-                NavBar(tab, { tab = it }, Modifier.align(Alignment.BottomCenter))
-                addTarget?.let { AddToPlaylistDialog(it, playlists) { addTarget = null } }
+    // genre dial entries: all songs, every genre found, then playlists
+    val cats = remember(tracks, playlists.list) {
+        val byUri = tracks.associateBy { it.uri.toString() }
+        val genres = tracks.filter { it.genre.isNotBlank() }.groupBy { it.genre.uppercase() }
+            .entries.sortedByDescending { it.value.size }.take(12).map { Cat(it.key, it.value) }
+        listOf(Cat("ALL SONGS", tracks)) + genres + playlists.list.map { p -> Cat(p.name.uppercase(), p.uris.mapNotNull { byUri[it] }) }
+    }
+    val ci = catIndex.coerceIn(0, cats.lastIndex)
+    val albums = remember(tracks) { tracks.groupBy { it.albumId }.values.toList() }
+
+    // status-bar icon colour follows the screen
+    val view = LocalView.current
+    val darkScreen = screen == 0 || showAlbums
+    SideEffect {
+        (view.context as? Activity)?.window?.let { w ->
+            WindowCompat.getInsetsController(w, view).apply {
+                isAppearanceLightStatusBars = !darkScreen
+                isAppearanceLightNavigationBars = !darkScreen
             }
         }
+    }
+
+    Box(Modifier.fillMaxSize().background(Drop.bg)) {
+        when (screen) {
+            0 -> SplashScreen {
+                if (!granted) launcher.launch(permsToAsk())
+                screen = if (prefs.getBoolean("genre_set", false)) 2 else 1
+            }
+            1 -> IntroScreen(cats, ci, tracks.firstOrNull()) { i ->
+                catIndex = i
+                prefs.edit().putBoolean("genre_set", true).putInt("cat", i).apply()
+                screen = 2
+            }
+            else -> DropShell(
+                c = c, cats = cats, catIndex = ci,
+                onCatStep = { d ->
+                    val n = cats.size
+                    catIndex = (((catIndex + d) % n) + n) % n
+                    prefs.edit().putInt("cat", catIndex).apply()
+                },
+                loadedCat = loadedCat, onLoaded = { loadedCat = it },
+                onImport = onImport, onRefresh = onRefresh,
+                onWidget = { ctx.startActivity(Intent(ctx, WidgetConfigActivity::class.java)) },
+                onAlbums = { if (albums.isNotEmpty()) showAlbums = true },
+                onIntro = { screen = 1 },
+                onSave = { addTarget = it },
+                onOutput = {
+                    runCatching { ctx.startActivity(Intent(Settings.Panel.ACTION_VOLUME).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+                })
+        }
+        if (showAlbums) AlbumStack(albums,
+            onPick = { list -> showAlbums = false; c.play(list, 0); loadedCat = ci },
+            onClose = { showAlbums = false })
+        addTarget?.let { AddToPlaylistDialog(it, playlists) { addTarget = null } }
     }
 }
