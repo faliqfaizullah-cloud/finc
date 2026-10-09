@@ -295,7 +295,9 @@ fun App(c: Controller) {
     Box(Modifier.fillMaxSize().background(Drop.bg)) {
         when (screen) {
             0 -> SplashScreen {
-                if (!granted) launcher.launch(permsToAsk())
+                // ask for anything still missing: music access and the notification that shows the lock-screen player
+                val missing = permsToAsk().filter { ContextCompat.checkSelfPermission(ctx, it) != PackageManager.PERMISSION_GRANTED }
+                if (missing.isNotEmpty()) launcher.launch(missing.toTypedArray())
                 screen = if (prefs.getBoolean("genre_set", false)) 2 else 1
             }
             1 -> IntroScreen(cats, ci, tracks.firstOrNull()) { i ->

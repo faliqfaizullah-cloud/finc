@@ -38,6 +38,9 @@ class PlaybackService : MediaSessionService() {
         session = MediaSession.Builder(this, PlayerHolder.get(this))
             .apply { if (open != null) setSessionActivity(open) }
             .build()
+        // Register the session right away so the notification / lock-screen card appears
+        // as soon as playback starts, even when no controller has connected to the service.
+        session?.let { addSession(it) }
         setMediaNotificationProvider(
             DefaultMediaNotificationProvider.Builder(this).build().also { it.setSmallIcon(R.drawable.ic_notification) })
     }
