@@ -1,6 +1,7 @@
 package com.finc.music
 
 import android.content.ContentProvider
+import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
 import android.database.Cursor
@@ -12,7 +13,9 @@ import android.graphics.Paint
 import android.graphics.Shader
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.provider.MediaStore
 import android.util.Size
 import java.io.File
 import java.io.FileOutputStream
@@ -36,7 +39,16 @@ fun loadArtBitmap(ctx: Context, uri: Uri): Bitmap? {
         } finally { r.release() }
     }
     if (uri.authority == "media") {
-        return runCatching { ctx.contentResolver.loadThumbnail(uri, Size(800, 800), null) }.getOrNull()
+        // Android 10+ has a thumbnail API; Android 8 and 9 read the album-art content URI instead
+        if (Build.VERSION.SDK_INT >= 29) {
+            return runCatching { ctx.contentResolver.loadThumbnail(uri, Size(800, 800), null) }.getOrNull()
+        }
+        return runCatching {
+            val albumId = ctx.contentResolver.query(uri, arrayOf(MediaStore.Audio.Media.ALBUM_ID), null, null, null)
+                ?.use { if (it.moveToFirst()) it.getLong(0) else null } ?: return null
+            val art = ContentUris.withAppendedId(Uri.parse("content://media/external/audio/albumart"), albumId)
+            ctx.contentResolver.openInputStream(art)?.use { BitmapFactory.decodeStream(it) }
+        }.getOrNull()
     }
     return null
 }

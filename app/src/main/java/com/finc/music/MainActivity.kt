@@ -319,7 +319,9 @@ fun App(c: Controller) {
                 onIntro = { screen = 1 },
                 onSave = { addTarget = it },
                 onOutput = {
-                    runCatching { ctx.startActivity(Intent(Settings.Panel.ACTION_VOLUME).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+                    // the volume panel needs Android 10; older versions open the sound settings
+                    val action = if (Build.VERSION.SDK_INT >= 29) Settings.Panel.ACTION_VOLUME else Settings.ACTION_SOUND_SETTINGS
+                    runCatching { ctx.startActivity(Intent(action).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
                 })
         }
         if (showAlbums) AlbumStack(albums,
