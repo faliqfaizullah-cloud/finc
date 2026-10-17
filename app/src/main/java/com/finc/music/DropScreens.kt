@@ -98,7 +98,8 @@ fun DropShell(
     onAlbums: () -> Unit, onIntro: () -> Unit, onSave: (Track) -> Unit, onOutput: () -> Unit
 ) {
     val h = rememberHaptics()
-    val pager = rememberPagerState { 4 }
+    val pager = rememberPagerState { 5 }
+    var lyricsReload by remember { mutableIntStateOf(0) }
     var lastPage by remember { mutableIntStateOf(0) }
     LaunchedEffect(pager.currentPage) { if (pager.currentPage != lastPage) { h.tick(); lastPage = pager.currentPage } }
     var menu by remember { mutableStateOf(false) }
@@ -144,11 +145,12 @@ fun DropShell(
                         0 -> GenrePage(cats, ci, onCatStep, h)
                         1 -> TempoPage(c.speed, { c.setTempo(it) }, h)
                         2 -> DropPage(c, cat, onToggle, h)
-                        else -> OutputPage(c, h)
+                        3 -> OutputPage(c, h)
+                        else -> LyricsPage(c, lyricsReload, h)
                     }
                 }
             }
-            DotText("0${pager.currentPage + 1}/04", Modifier.align(Alignment.TopEnd).padding(14.dp), pitch = 1.2.dp, color = Drop.dim)
+            DotText("0${pager.currentPage + 1}/05", Modifier.align(Alignment.TopEnd).padding(14.dp), pitch = 1.2.dp, color = Drop.dim)
         }
 
         // bottom control panel(s)
@@ -157,17 +159,19 @@ fun DropShell(
                 0 -> BottomPanel { DropPill("INPUT", onClick = onImport) }
                 1 -> BottomPanel { DropPill("RESET", strong = true) { c.setTempo(1f) } }
                 2 -> BottomPanel { DropPill("NEXT") { c.next() } }
-                else -> {
+                3 -> {
                     BottomPanel(92.dp) {
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                             DropPill("REMIX\nSHUFFLE", strong = true) {
                                 if (cat.tracks.isNotEmpty()) { c.play(cat.tracks.shuffled(), 0); onLoaded(ci) }
                             }
+                            DropPill("REPEAT\n${listOf("OFF", "ALL", "ONE")[c.repeat]}") { c.cycleRepeat() }
                             DropPill("SAVE\nPLAYLIST") { c.current?.let(onSave) }
                         }
                     }
                     BottomPanel(92.dp) { DropPill("OUTPUT\nVOLUME", onClick = onOutput) }
                 }
+                else -> BottomPanel { DropPill("RELOAD", strong = true) { lyricsReload++ } }
             }
         }
     }

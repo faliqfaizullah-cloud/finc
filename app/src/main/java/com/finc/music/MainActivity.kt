@@ -141,11 +141,47 @@ class Controller private constructor(private val app: Context) {
     var pos by mutableLongStateOf(0L)
     val current: Track? get() = queue.getOrNull(index)
 
+    /** 0 = off (the queue ends, then the library keeps playing), 1 = repeat the queue, 2 = repeat this song. */
+    var repeat by mutableIntStateOf(0)
+    /** Every song on the device; used to keep playing once the current queue has finished. */
+    var pool: List<Track> = emptyList()
+    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val sp = app.getSharedPreferences("finc", Context.MODE_PRIVATE)
+
     init {
+        repeat = sp.getInt("repeat", 0).coerceIn(0, 2)
+        applyRepeat()
         exo.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) { playing = isPlaying; PlayerWidget.refresh(app) }
             override fun onMediaItemTransition(m: MediaItem?, reason: Int) { index = exo.currentMediaItemIndex; publish() }
+            override fun onPlaybackStateChanged(state: Int) {
+                // the last song of the queue finished: go on to the next songs automatically
+                if (state == Player.STATE_ENDED && repeat == 0) mainHandler.post { autoContinue() }
+            }
         })
+    }
+
+    private fun applyRepeat() {
+        exo.repeatMode = when (repeat) {
+            1 -> Player.REPEAT_MODE_ALL
+            2 -> Player.REPEAT_MODE_ONE
+            else -> Player.REPEAT_MODE_OFF
+        }
+    }
+
+    fun cycleRepeat() {
+        repeat = (repeat + 1) % 3
+        sp.edit().putInt("repeat", repeat).apply()
+        applyRepeat()
+    }
+
+    /** Continue with the songs that follow the last one played (wrapping round the library). */
+    private fun autoContinue() {
+        val last = queue.lastOrNull() ?: return
+        if (pool.isEmpty()) return
+        val at = pool.indexOfFirst { it.id == last.id }
+        val rest = if (at >= 0) pool.subList(at + 1, pool.size) + pool.subList(0, at + 1) else pool
+        if (rest.isNotEmpty()) play(rest, 0)
     }
 
     /** Every item carries an artwork URI, so the system always shows that song's own cover. */
@@ -168,7 +204,7 @@ class Controller private constructor(private val app: Context) {
         publish()
     }
     fun toggle() { if (exo.isPlaying) exo.pause() else exo.play() }
-    fun next() { if (exo.hasNextMediaItem()) exo.seekToNextMediaItem() }
+    fun next() { if (exo.hasNextMediaItem()) exo.seekToNextMediaItem() else if (repeat == 0) autoContinue() }
     fun prev() { if (exo.currentPosition > 3000 || !exo.hasPreviousMediaItem()) exo.seekTo(0) else exo.seekToPreviousMediaItem() }
     var speed by mutableFloatStateOf(1f)
     fun setTempo(s: Float) { speed = s; exo.setPlaybackSpeed(s) }
@@ -269,6 +305,7 @@ fun App(c: Controller) {
     var catIndex by rememberSaveable { mutableIntStateOf(prefs.getInt("cat", 0)) }
     var loadedCat by rememberSaveable { mutableIntStateOf(-1) }
     LaunchedEffect(c.playing) { while (c.playing) { c.tick(); delay(500) } }
+    LaunchedEffect(tracks) { c.pool = tracks }
 
     // genre dial entries: all songs, every genre found, then playlists
     val cats = remember(tracks, playlists.list) {
