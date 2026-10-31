@@ -144,13 +144,13 @@ fun DotLogo(modifier: Modifier = Modifier, color: Color = Drop.ink) {
 
 /** Small raised pill with a dot-matrix caption underneath. */
 @Composable
-fun DropPill(label: String, modifier: Modifier = Modifier, strong: Boolean = false, onClick: () -> Unit) {
+fun DropPill(label: String, modifier: Modifier = Modifier, strong: Boolean = false, active: Boolean = false, onClick: () -> Unit) {
     val h = rememberHaptics()
     Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
         Box(Modifier.size(54.dp, 22.dp).pressable(h, strong, onClick)
             .shadow(5.dp, CircleShape, ambientColor = Color(0x33000000), spotColor = Color(0x33000000))
-            .background(Brush.verticalGradient(listOf(Color.White, Color(0xFFE2E2E2))), CircleShape)
-            .border(1.dp, Color.White, CircleShape))
+            .background(Brush.verticalGradient(if (active) listOf(Color(0xFFFF9A70), Drop.orange) else listOf(Color.White, Color(0xFFE2E2E2))), CircleShape)
+            .border(1.dp, if (active) Color(0xFFFFC4AC) else Color.White, CircleShape))
         Spacer(Modifier.height(9.dp))
         DotText(label, pitch = 1.3.dp, color = Drop.dim, centered = true)
     }

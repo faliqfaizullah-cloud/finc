@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.MediaSession
@@ -16,7 +17,11 @@ object PlayerHolder {
     /** The player if it already exists (never creates one). */
     fun peek(): ExoPlayer? = player
     @Synchronized
-    fun get(ctx: Context): ExoPlayer = player ?: ExoPlayer.Builder(ctx.applicationContext)
+    fun get(ctx: Context): ExoPlayer = player ?: ExoPlayer.Builder(
+        ctx.applicationContext,
+        // hi-res output keeps 24-bit audio instead of squeezing it to 16-bit (applies after a restart)
+        DefaultRenderersFactory(ctx.applicationContext).setEnableAudioFloatOutput(
+            ctx.applicationContext.getSharedPreferences("finc", Context.MODE_PRIVATE).getBoolean("hires", false)))
         .setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build(), true)
         .setHandleAudioBecomingNoisy(true)
         .setWakeMode(C.WAKE_MODE_LOCAL)

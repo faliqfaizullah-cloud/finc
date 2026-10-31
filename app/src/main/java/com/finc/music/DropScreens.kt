@@ -31,12 +31,15 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import java.util.Locale
 import kotlin.math.*
@@ -95,7 +98,8 @@ fun DropShell(
     c: Controller, cats: List<Cat>, catIndex: Int, onCatStep: (Int) -> Unit,
     loadedCat: Int, onLoaded: (Int) -> Unit,
     onImport: () -> Unit, onRefresh: () -> Unit, onWidget: () -> Unit,
-    onAlbums: () -> Unit, onIntro: () -> Unit, onSave: (Track) -> Unit, onOutput: () -> Unit
+    onAlbums: () -> Unit, onIntro: () -> Unit, onSave: (Track) -> Unit, onOutput: () -> Unit,
+    hiResOn: Boolean, onHiRes: () -> Unit
 ) {
     val h = rememberHaptics()
     val pager = rememberPagerState { 5 }
@@ -128,6 +132,7 @@ fun DropShell(
                     DropdownMenuItem(text = { Text("Import music") }, onClick = { menu = false; onImport() })
                     DropdownMenuItem(text = { Text("Refresh library") }, onClick = { menu = false; onRefresh() })
                     DropdownMenuItem(text = { Text("Widget style") }, onClick = { menu = false; onWidget() })
+                    DropdownMenuItem(text = { Text("Hi-res output: " + (if (hiResOn) "on" else "off")) }, onClick = { menu = false; onHiRes() })
                 }
             }
         }
@@ -169,7 +174,12 @@ fun DropShell(
                             DropPill("SAVE\nPLAYLIST") { c.current?.let(onSave) }
                         }
                     }
-                    BottomPanel(92.dp) { DropPill("OUTPUT\nVOLUME", onClick = onOutput) }
+                    BottomPanel(92.dp) {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                            DropPill("OUTPUT\nVOLUME", onClick = onOutput)
+                            DropPill("HAPTIC\nRHYTHM ${if (c.rhythm) "ON" else "OFF"}", strong = true, active = c.rhythm) { c.toggleRhythm() }
+                        }
+                    }
                 }
                 else -> BottomPanel { DropPill("RELOAD", strong = true) { lyricsReload++ } }
             }
@@ -352,9 +362,22 @@ private fun DropSwitch(on: Boolean, enabled: Boolean, onToggle: (Boolean) -> Uni
 private fun OutputPage(c: Controller, h: Haptics) {
     val t = c.current
     val dur = (t?.duration ?: 1L).coerceAtLeast(1L)
+    val ctx = LocalContext.current
+    val info by produceState<AudioInfo?>(null, t?.id) {
+        value = if (t == null) null else withContext(Dispatchers.Default) { AudioProbe.probe(ctx, t) }
+    }
     BoxWithConstraints(Modifier.fillMaxSize().padding(14.dp)) {
-        DotText("F.INC\n${(t?.title ?: "NO TRACK").take(20)}\n${(t?.artist ?: "").take(20)}",
-            Modifier.align(Alignment.TopStart), pitch = 1.2.dp, color = Drop.dim)
+        Column(Modifier.align(Alignment.TopStart)) {
+            DotText("F.INC\n${(t?.title ?: "NO TRACK").take(20)}\n${(t?.artist ?: "").take(20)}", pitch = 1.2.dp, color = Drop.dim)
+            info?.let { i ->
+                Spacer(Modifier.height(6.dp))
+                DotText(i.label() + if (i.hiRes) " HI-RES" else "", pitch = 1.2.dp, color = if (i.lossless) Color(0xFF38B35A) else Drop.dim)
+            }
+            if (c.rhythm) {
+                Spacer(Modifier.height(4.dp))
+                DotText("RHYTHM HAPTIC", pitch = 1.2.dp, color = Drop.orange)
+            }
+        }
         Box(Modifier.align(Alignment.TopEnd).padding(top = 30.dp, end = 2.dp).size(8.dp)
             .background(if (c.playing) Drop.green else Color(0xFFBDBDBD), CircleShape))
         val sphere = minOf(maxWidth * 0.78f, (maxHeight - 150.dp).coerceAtLeast(80.dp))

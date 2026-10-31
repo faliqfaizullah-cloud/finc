@@ -16,6 +16,12 @@ import android.media.MediaMetadataRetriever
 import android.provider.OpenableColumns
 import android.net.Uri
 import android.os.Build
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.widget.Toast
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -74,7 +80,7 @@ import kotlin.math.abs
 
 // ---------- Data ----------
 data class Track(val id: Long, val title: String, val artist: String, val album: String,
-                 val albumId: Long, val uri: Uri, val duration: Long, val genre: String = "")
+                 val albumId: Long, val uri: Uri, val duration: Long, val genre: String = "", val mime: String = "")
 
 fun cleanGenre(raw: String?): String {
     val g = raw?.substringBefore(';')?.trim().orEmpty()
@@ -85,7 +91,7 @@ fun loadTracks(ctx: Context): List<Track> {
     val out = mutableListOf<Track>()
     val A = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
     val cols = mutableListOf(MediaStore.Audio.Media._ID, MediaStore.Audio.Media.TITLE, MediaStore.Audio.Media.ARTIST,
-        MediaStore.Audio.Media.ALBUM, MediaStore.Audio.Media.ALBUM_ID, MediaStore.Audio.Media.DURATION)
+        MediaStore.Audio.Media.ALBUM, MediaStore.Audio.Media.ALBUM_ID, MediaStore.Audio.Media.DURATION, MediaStore.Audio.Media.MIME_TYPE)
     if (Build.VERSION.SDK_INT >= 30) cols += MediaStore.Audio.Media.GENRE
     ctx.contentResolver.query(A, cols.toTypedArray(),
         "${MediaStore.Audio.Media.IS_MUSIC}!=0 AND ${MediaStore.Audio.Media.DURATION}>30000", null,
@@ -94,7 +100,7 @@ fun loadTracks(ctx: Context): List<Track> {
             val id = c.getLong(0)
             out += Track(id, c.getString(1) ?: "Unknown", c.getString(2) ?: "Unknown",
                 c.getString(3) ?: "Unknown", c.getLong(4), ContentUris.withAppendedId(A, id), c.getLong(5),
-                if (cols.size > 6) cleanGenre(c.getString(6)) else "")
+                if (cols.size > 7) cleanGenre(c.getString(7)) else "", c.getString(6) ?: "")
         }
     }
     return out
@@ -119,7 +125,7 @@ fun readImported(ctx: Context, uri: Uri): Track? = runCatching {
         val dur = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
         Track(-(abs(uri.toString().hashCode()).toLong()) - 1, title, artist, album,
             -abs(album.hashCode().toLong()) - 1_000_000_000_000L, uri, dur,
-            cleanGenre(r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_GENRE)))
+            cleanGenre(r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_GENRE)), importedMime(ctx, uri))
     } finally { r.release() }
 }.getOrNull()
 
@@ -148,12 +154,69 @@ class Controller private constructor(private val app: Context) {
     private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private val sp = app.getSharedPreferences("finc", Context.MODE_PRIVATE)
 
+    // ---- rhythm haptics: light pulses on the beat of the song that is playing ----
+    var rhythm by mutableStateOf(sp.getBoolean("rhythm", false))
+    private var beatMap: BeatMap? = null
+    private var beatJob: Job? = null
+    private var lastBeatPos = 0L
+    private val beatScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val vibrator: Vibrator? = app.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+
+    private val beatTick = object : Runnable {
+        override fun run() {
+            val m = beatMap
+            if (!rhythm || m == null || !exo.isPlaying) return
+            val now = exo.currentPosition + 40L   // fire slightly early to cover the motor's start-up time
+            if (now < lastBeatPos || now - lastBeatPos > 400L) lastBeatPos = now - 16L
+            val s = m.strongestIn(lastBeatPos, now)
+            if (s >= 0f) pulse(s)
+            lastBeatPos = now
+            mainHandler.postDelayed(this, 16L)
+        }
+    }
+
+    private fun pulse(strength: Float) {
+        val v = vibrator ?: return
+        if (!v.hasVibrator()) return
+        val amp = if (v.hasAmplitudeControl()) (50 + 110 * strength).toInt().coerceIn(1, 255) else VibrationEffect.DEFAULT_AMPLITUDE
+        v.vibrate(VibrationEffect.createOneShot(18L, amp))
+    }
+
+    private fun startBeatTick() {
+        if (rhythm && beatMap != null) {
+            lastBeatPos = exo.currentPosition
+            mainHandler.removeCallbacks(beatTick)
+            mainHandler.post(beatTick)
+        }
+    }
+
+    private fun restartRhythm() {
+        beatJob?.cancel()
+        mainHandler.removeCallbacks(beatTick)
+        beatMap = null
+        val t = current ?: return
+        if (!rhythm) return
+        val map = BeatMap()
+        beatMap = map
+        beatJob = beatScope.launch { runCatching { BeatAnalyzer.analyze(app, t.uri, map) } }
+        startBeatTick()
+    }
+
+    fun toggleRhythm() {
+        rhythm = !rhythm
+        sp.edit().putBoolean("rhythm", rhythm).apply()
+        restartRhythm()
+    }
+
     init {
         repeat = sp.getInt("repeat", 0).coerceIn(0, 2)
         applyRepeat()
         exo.addListener(object : Player.Listener {
-            override fun onIsPlayingChanged(isPlaying: Boolean) { playing = isPlaying; PlayerWidget.refresh(app) }
-            override fun onMediaItemTransition(m: MediaItem?, reason: Int) { index = exo.currentMediaItemIndex; publish() }
+            override fun onIsPlayingChanged(isPlaying: Boolean) { playing = isPlaying; PlayerWidget.refresh(app); if (isPlaying) startBeatTick() }
+            override fun onMediaItemTransition(m: MediaItem?, reason: Int) { index = exo.currentMediaItemIndex; publish(); restartRhythm() }
+            override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
+                lastBeatPos = exo.currentPosition
+            }
             override fun onPlaybackStateChanged(state: Int) {
                 // the last song of the queue finished: go on to the next songs automatically
                 if (state == Player.STATE_ENDED && repeat == 0) mainHandler.post { autoContinue() }
@@ -202,6 +265,7 @@ class Controller private constructor(private val app: Context) {
         exo.prepare(); exo.play()
         app.startService(Intent(app, PlaybackService::class.java))
         publish()
+        restartRhythm()
     }
     fun toggle() { if (exo.isPlaying) exo.pause() else exo.play() }
     fun next() { if (exo.hasNextMediaItem()) exo.seekToNextMediaItem() else if (repeat == 0) autoContinue() }
@@ -292,7 +356,7 @@ fun App(c: Controller) {
             prefs.edit().putStringSet("imported", imported.map { it.uri.toString() }.toSet()).apply()
         }
     }
-    val onImport: () -> Unit = { importer.launch(arrayOf("audio/*")) }
+    val onImport: () -> Unit = { importer.launch(arrayOf("audio/*", "application/flac", "application/x-flac", "application/octet-stream")) }
     val onRefresh: () -> Unit = {
         if (granted) scope.launch { media = withContext(Dispatchers.IO) { loadTracks(ctx) } } else launcher.launch(permsToAsk())
     }
@@ -302,19 +366,29 @@ fun App(c: Controller) {
 
     var screen by rememberSaveable { mutableIntStateOf(0) }          // 0 splash, 1 genre list, 2 device
     var showAlbums by rememberSaveable { mutableStateOf(false) }
-    var catIndex by rememberSaveable { mutableIntStateOf(prefs.getInt("cat", 0)) }
-    var loadedCat by rememberSaveable { mutableIntStateOf(-1) }
+    var catLabel by rememberSaveable { mutableStateOf(prefs.getString("cat_label", "ALL SONGS") ?: "ALL SONGS") }
+    var loadedLabel by rememberSaveable { mutableStateOf("") }
+    var hiRes by remember { mutableStateOf(prefs.getBoolean("hires", false)) }
+    // lossless files (FLAC, WAV, AIFF, ALAC) found in the library, with their sample rate and bit depth
+    val audioInfo by produceState(emptyMap<Long, AudioInfo>(), tracks) {
+        value = withContext(Dispatchers.Default) { AudioProbe.scanLossless(ctx, tracks) }
+    }
     LaunchedEffect(c.playing) { while (c.playing) { c.tick(); delay(500) } }
     LaunchedEffect(tracks) { c.pool = tracks }
 
     // genre dial entries: all songs, every genre found, then playlists
-    val cats = remember(tracks, playlists.list) {
+    val cats = remember(tracks, playlists.list, audioInfo) {
         val byUri = tracks.associateBy { it.uri.toString() }
         val genres = tracks.filter { it.genre.isNotBlank() }.groupBy { it.genre.uppercase() }
             .entries.sortedByDescending { it.value.size }.take(12).map { Cat(it.key, it.value) }
-        listOf(Cat("ALL SONGS", tracks)) + genres + playlists.list.map { p -> Cat(p.name.uppercase(), p.uris.mapNotNull { byUri[it] }) }
+        val lossless = tracks.filter { audioInfo.containsKey(it.id) }
+        val hires = lossless.filter { audioInfo[it.id]?.hiRes == true }
+        listOf(Cat("ALL SONGS", tracks)) +
+            (if (lossless.isNotEmpty()) listOf(Cat("LOSSLESS", lossless)) else emptyList()) +
+            (if (hires.isNotEmpty()) listOf(Cat("HI-RES", hires)) else emptyList()) +
+            genres + playlists.list.map { p -> Cat(p.name.uppercase(), p.uris.mapNotNull { byUri[it] }) }
     }
-    val ci = catIndex.coerceIn(0, cats.lastIndex)
+    val ci = cats.indexOfFirst { it.label == catLabel }.coerceAtLeast(0)
     val albums = remember(tracks) { tracks.groupBy { it.albumId }.values.toList() }
 
     // status-bar icon colour follows the screen
@@ -338,18 +412,26 @@ fun App(c: Controller) {
                 screen = if (prefs.getBoolean("genre_set", false)) 2 else 1
             }
             1 -> IntroScreen(cats, ci, tracks.firstOrNull()) { i ->
-                catIndex = i
-                prefs.edit().putBoolean("genre_set", true).putInt("cat", i).apply()
+                catLabel = cats[i].label
+                prefs.edit().putBoolean("genre_set", true).putString("cat_label", catLabel).apply()
                 screen = 2
             }
             else -> DropShell(
                 c = c, cats = cats, catIndex = ci,
                 onCatStep = { d ->
                     val n = cats.size
-                    catIndex = (((catIndex + d) % n) + n) % n
-                    prefs.edit().putInt("cat", catIndex).apply()
+                    val now = cats.indexOfFirst { it.label == catLabel }.coerceAtLeast(0)
+                    catLabel = cats[(((now + d) % n) + n) % n].label
+                    prefs.edit().putString("cat_label", catLabel).apply()
                 },
-                loadedCat = loadedCat, onLoaded = { loadedCat = it },
+                loadedCat = cats.indexOfFirst { it.label == loadedLabel },
+                onLoaded = { loadedLabel = cats[it.coerceIn(0, cats.lastIndex)].label },
+                hiResOn = hiRes,
+                onHiRes = {
+                    hiRes = !hiRes
+                    prefs.edit().putBoolean("hires", hiRes).apply()
+                    Toast.makeText(ctx, "Hi-res output " + (if (hiRes) "on" else "off") + ": restart F.INC to apply", Toast.LENGTH_LONG).show()
+                },
                 onImport = onImport, onRefresh = onRefresh,
                 onWidget = { ctx.startActivity(Intent(ctx, WidgetConfigActivity::class.java)) },
                 onAlbums = { if (albums.isNotEmpty()) showAlbums = true },
@@ -362,7 +444,7 @@ fun App(c: Controller) {
                 })
         }
         if (showAlbums) AlbumStack(albums,
-            onPick = { list -> showAlbums = false; c.play(list, 0); loadedCat = ci },
+            onPick = { list -> showAlbums = false; c.play(list, 0); loadedLabel = cats[ci].label },
             onClose = { showAlbums = false })
         addTarget?.let { AddToPlaylistDialog(it, playlists) { addTarget = null } }
     }
