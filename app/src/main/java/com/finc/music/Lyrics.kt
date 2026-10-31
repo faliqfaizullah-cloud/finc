@@ -25,13 +25,19 @@ import java.io.File
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.SocketTimeoutException
 import java.net.URLEncoder
+import java.net.UnknownHostException
+import javax.net.ssl.SSLException
 import java.util.UUID
 import kotlin.math.abs
 
 data class LyricLine(val ms: Long, val text: String)
 
-class Lyrics(val status: Int, val lines: List<LyricLine>, val plain: List<String>, val synced: Boolean) {
+class Lyrics(
+    val status: Int, val lines: List<LyricLine>, val plain: List<String>, val synced: Boolean,
+    val reason: String = ""
+) {
     companion object {
         const val FOUND = 0
         const val NOT_FOUND = 1
@@ -40,16 +46,29 @@ class Lyrics(val status: Int, val lines: List<LyricLine>, val plain: List<String
 }
 
 /**
- * Looks lyrics up on LRCLIB (free, open lyrics database) by title / artist / album / length,
+ * Looks lyrics up on LRCLIB (free, open lyrics database), falling back to lyrics.ovh,
  * and keeps what it finds on the phone so each song is only looked up once.
  */
 object LyricsRepo {
     private val stamp = Regex("""\[(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?]""")
+    private val noise = Regex("""\s*[(\[][^)\]]*(feat|ft\.|remaster|live|version|edit|mix|from|bonus|deluxe)[^)\]]*[)\]]""", RegexOption.IGNORE_CASE)
+    private val tail = Regex("""\s+-\s+(remaster|live|single|radio|bonus|deluxe|mono|stereo).*""", RegexOption.IGNORE_CASE)
+
+    private class Resp(val code: Int, val body: String)
 
     private fun key(t: Track) =
         UUID.nameUUIDFromBytes("${t.title}|${t.artist}|${t.album}|${t.duration / 1000}".toByteArray()).toString()
 
-    private fun clean(s: String) = if (s.equals("Unknown", true) || s.startsWith("<")) "" else s
+    private fun clean(s: String) =
+        if (s.isBlank() || s.equals("Unknown", true) || s.startsWith("<")) "" else s.trim()
+
+    private fun baseTitle(s: String) = s.replace(noise, "").replace(tail, "").trim().ifEmpty { s.trim() }
+
+    /** JSON null must read as empty, not as the text "null". */
+    private fun str(o: JSONObject, k: String) = if (o.isNull(k)) "" else o.optString(k, "")
+
+    private fun hasLyrics(o: JSONObject) =
+        str(o, "syncedLyrics").isNotBlank() || str(o, "plainLyrics").isNotBlank() || o.optBoolean("instrumental")
 
     fun parseLrc(text: String): List<LyricLine> {
         val out = mutableListOf<LyricLine>()
@@ -70,50 +89,93 @@ object LyricsRepo {
 
     private fun fromJson(o: JSONObject): Lyrics {
         if (o.optBoolean("none")) return Lyrics(Lyrics.NOT_FOUND, emptyList(), emptyList(), false)
-        val synced = o.optString("synced", "")
+        val synced = str(o, "synced")
         if (synced.isNotBlank()) {
             val lines = parseLrc(synced)
             if (lines.isNotEmpty()) return Lyrics(Lyrics.FOUND, lines, emptyList(), true)
         }
-        val plain = o.optString("plain", "")
+        val plain = str(o, "plain")
         if (plain.isNotBlank()) return Lyrics(Lyrics.FOUND, emptyList(), plain.lines(), false)
         if (o.optBoolean("instrumental")) return Lyrics(Lyrics.FOUND, emptyList(), listOf("INSTRUMENTAL"), false)
         return Lyrics(Lyrics.NOT_FOUND, emptyList(), emptyList(), false)
     }
 
-    private fun http(url: String): String? {
+    private fun http(url: String): Resp {
         val c = URL(url).openConnection() as HttpURLConnection
-        c.connectTimeout = 8000
-        c.readTimeout = 8000
-        c.setRequestProperty("User-Agent", "F.INC Android music player")
+        c.connectTimeout = 10_000
+        c.readTimeout = 12_000
+        c.setRequestProperty("User-Agent", "F.INC Android music player (v2)")
+        c.setRequestProperty("Accept", "application/json")
         return try {
-            when (c.responseCode) {
-                200 -> c.inputStream.bufferedReader().use { it.readText() }
-                404 -> null
-                else -> throw IOException("HTTP ${c.responseCode}")
-            }
+            val code = c.responseCode
+            val stream = if (code in 200..299) c.inputStream else c.errorStream
+            Resp(code, stream?.bufferedReader()?.use { it.readText() } ?: "")
         } finally { c.disconnect() }
     }
 
-    /** Returns the matching LRCLIB record, or null when there is none. Throws on network trouble. */
+    /**
+     * Body of a successful reply, or null for "no match here" (404, 400 ...) so the next lookup is tried.
+     * Only real trouble (no connection, server down, rate limit) throws.
+     */
+    private fun get(url: String): String? {
+        val r = http(url)
+        return when {
+            r.code in 200..299 -> r.body
+            r.code == 429 || r.code >= 500 -> throw IOException("SERVER " + r.code)
+            else -> null
+        }
+    }
+
+    /** Returns a record with syncedLyrics / plainLyrics / instrumental, or null when nothing matches. */
     private fun fetch(t: Track): JSONObject? {
         fun q(s: String) = URLEncoder.encode(s, "UTF-8")
         val artist = clean(t.artist)
+        val album = clean(t.album)
+        val title = baseTitle(t.title)
         val sec = (t.duration / 1000).toInt()
+
+        // 1. exact lookup (LRCLIB needs all four details)
+        if (artist.isNotEmpty() && album.isNotEmpty()) {
+            val body = get("https://lrclib.net/api/get?artist_name=${q(artist)}&track_name=${q(t.title.trim())}&album_name=${q(album)}&duration=$sec")
+            val o = body?.let { runCatching { JSONObject(it) }.getOrNull() }
+            if (o != null && hasLyrics(o)) return o
+        }
+
+        // 2. searches, most precise first
+        val searches = buildList {
+            if (artist.isNotEmpty()) add("track_name=${q(title)}&artist_name=${q(artist)}")
+            add("q=${q((artist + " " + title).trim())}")
+            add("q=${q(title)}")
+        }
+        for (s in searches) {
+            val arr = get("https://lrclib.net/api/search?$s")?.let { runCatching { JSONArray(it) }.getOrNull() } ?: continue
+            var best: JSONObject? = null
+            var bestD = Int.MAX_VALUE
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                if (!hasLyrics(o)) continue
+                val d = abs(o.optDouble("duration", 0.0).toInt() - sec)
+                if (d < bestD) { bestD = d; best = o }
+            }
+            if (best != null) return best
+        }
+
+        // 3. last resort: plain lyrics from lyrics.ovh
         if (artist.isNotEmpty()) {
-            http("https://lrclib.net/api/get?artist_name=${q(artist)}&track_name=${q(t.title)}&album_name=${q(clean(t.album))}&duration=$sec")
-                ?.let { return JSONObject(it) }
+            val body = get("https://api.lyrics.ovh/v1/${q(artist).replace("+", "%20")}/${q(title).replace("+", "%20")}")
+            val text = body?.let { runCatching { JSONObject(it) }.getOrNull() }?.let { str(it, "lyrics") }.orEmpty()
+            if (text.isNotBlank()) return JSONObject().put("plainLyrics", text.replace("\r\n", "\n"))
         }
-        val url = "https://lrclib.net/api/search?track_name=${q(t.title)}" + if (artist.isNotEmpty()) "&artist_name=${q(artist)}" else ""
-        val arr = http(url)?.let { JSONArray(it) } ?: return null
-        var best: JSONObject? = null
-        var bestD = Int.MAX_VALUE
-        for (i in 0 until arr.length()) {
-            val o = arr.getJSONObject(i)
-            val d = abs(o.optDouble("duration", 0.0).toInt() - sec)
-            if (d < bestD) { bestD = d; best = o }
-        }
-        return best
+        return null
+    }
+
+    private fun reasonOf(e: Exception): String = when (e) {
+        is UnknownHostException -> "NO INTERNET"
+        is SocketTimeoutException -> "TIMED OUT"
+        is SSLException -> "SECURE LINK FAILED"
+        is SecurityException -> "NO INTERNET PERMISSION"
+        is IOException -> (e.message ?: "NETWORK ERROR").take(24).uppercase()
+        else -> e.javaClass.simpleName.take(24).uppercase()
     }
 
     suspend fun load(ctx: Context, t: Track, force: Boolean = false): Lyrics = withContext(Dispatchers.IO) {
@@ -123,20 +185,24 @@ object LyricsRepo {
             val cached = runCatching { fromJson(JSONObject(f.readText())) }.getOrNull()
             if (cached != null) return@withContext cached
         }
-        try {
-            val rec = fetch(t)
-            val stored = JSONObject()
-            if (rec == null) stored.put("none", true)
-            else {
-                stored.put("synced", rec.optString("syncedLyrics", ""))
-                stored.put("plain", rec.optString("plainLyrics", ""))
-                stored.put("instrumental", rec.optBoolean("instrumental"))
+        var last: Exception? = null
+        for (attempt in 1..2) {
+            try {
+                val rec = fetch(t)
+                val stored = JSONObject()
+                if (rec == null) stored.put("none", true)
+                else {
+                    stored.put("synced", str(rec, "syncedLyrics"))
+                    stored.put("plain", str(rec, "plainLyrics"))
+                    stored.put("instrumental", rec.optBoolean("instrumental"))
+                }
+                runCatching { f.writeText(stored.toString()) }
+                return@withContext fromJson(stored)
+            } catch (e: Exception) {
+                last = e
             }
-            runCatching { f.writeText(stored.toString()) }
-            fromJson(stored)
-        } catch (e: Exception) {
-            Lyrics(Lyrics.ERROR, emptyList(), emptyList(), false)
         }
+        Lyrics(Lyrics.ERROR, emptyList(), emptyList(), false, last?.let { reasonOf(it) } ?: "ERROR")
     }
 }
 
@@ -161,7 +227,7 @@ fun LyricsPage(c: Controller, reload: Int, h: Haptics) {
     val tag = when {
         t == null -> "NO TRACK"
         l == null -> "LOADING..."
-        l.status == Lyrics.ERROR -> "OFFLINE"
+        l.status == Lyrics.ERROR -> "ERROR"
         l.status == Lyrics.NOT_FOUND -> "NOT FOUND"
         l.synced -> "SYNCED"
         else -> "PLAIN"
@@ -171,7 +237,7 @@ fun LyricsPage(c: Controller, reload: Int, h: Haptics) {
         when {
             t == null -> DotText("PLAY A SONG\nFIRST", Modifier.align(Alignment.Center), pitch = 1.8.dp, color = Drop.dim, centered = true)
             l == null -> DotText("LOADING...", Modifier.align(Alignment.Center), pitch = 1.8.dp, color = Drop.dim)
-            l.status == Lyrics.ERROR -> DotText("CAN'T REACH\nLYRICS SERVER", Modifier.align(Alignment.Center), pitch = 1.8.dp, color = Drop.dim, centered = true)
+            l.status == Lyrics.ERROR -> DotText("CAN'T LOAD LYRICS\n${l.reason}\nTAP RELOAD", Modifier.align(Alignment.Center), pitch = 1.8.dp, color = Drop.dim, centered = true)
             l.status == Lyrics.NOT_FOUND -> DotText("NO LYRICS\nFOR THIS SONG", Modifier.align(Alignment.Center), pitch = 1.8.dp, color = Drop.dim, centered = true)
             else -> LazyColumn(Modifier.fillMaxSize().padding(top = 56.dp), state = st,
                 contentPadding = PaddingValues(bottom = 120.dp)) {
